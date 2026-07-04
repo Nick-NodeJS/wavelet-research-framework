@@ -11,6 +11,7 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "PyWavelets>=1.6",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = [
 
 [project.scripts]
 wavelet-research = "wavelet_research.cli_research:main"
+wavelet-service = "wavelet_research.service.server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
