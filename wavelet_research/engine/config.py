@@ -11,12 +11,17 @@ from wavelet_research.engine.decomposition import (
 )
 
 SUPPORTED_WAVELETS: frozenset[str] = frozenset({
-    "haar", "db4", "db6", "sym4", "coif3",
+    "haar",
+    "db2", "db4", "db6",
+    "sym4", "sym6",
+    "coif1", "coif3",
 })
 
 SUPPORTED_WINDOWS: frozenset[int] = frozenset({
-    256, 512, 1024, 2048, 4096,
+    128, 256, 512, 1024, 2048, 4096,
 })
+
+SUPPORTED_LEVELS: frozenset[int] = frozenset({1, 2, 3, 4})
 
 
 @dataclass(frozen=True)
@@ -26,11 +31,11 @@ class WaveletEngineConfig:
     Parameters
     ----------
     wavelet : str
-        Wavelet family name. Must be one of the supported wavelets.
+        Wavelet family name. Must be one of SUPPORTED_WAVELETS.
     window : int
-        Rolling window size in ticks. Must be one of the supported windows.
+        Rolling window size in ticks. Must be one of SUPPORTED_WINDOWS.
     level : int
-        Decomposition level. Must be >= 1.
+        Decomposition level. Must be in SUPPORTED_LEVELS (1–4).
     volatility_window : int
         Window size for rolling volatility estimation. Must be >= 1.
 

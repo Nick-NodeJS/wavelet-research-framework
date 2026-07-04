@@ -75,9 +75,14 @@ class TestServiceConfig:
         assert cfg.window == 512
         assert cfg.version == "0.2.0"
 
-    def test_only_db4_allowed(self) -> None:
-        with pytest.raises(ValueError, match="db4"):
-            ServiceConfig(wavelet="haar")
+    def test_unsupported_wavelet_rejected(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported wavelet"):
+            ServiceConfig(wavelet="bior1.1")
+
+    def test_supported_wavelets_accepted(self) -> None:
+        for wv in ("db2", "db4", "db6", "sym4", "sym6", "coif1", "haar"):
+            cfg = ServiceConfig(wavelet=wv, window=256, level=2)
+            assert cfg.wavelet == wv
 
     def test_invalid_port(self) -> None:
         with pytest.raises(ValueError, match="port"):
@@ -483,9 +488,7 @@ class TestRegression:
         for val in resp.z_score:
             assert not (val != val), f"NaN found in z_score"
 
-    def test_db4_is_fixed_wavelet(self) -> None:
-        """Service must always use db4, reject other wavelets."""
-        with pytest.raises(ValueError):
-            ServiceConfig(wavelet="haar")
-        with pytest.raises(ValueError):
-            ServiceConfig(wavelet="sym4")
+    def test_unsupported_wavelet_rejected(self) -> None:
+        """Truly unsupported wavelets are still rejected."""
+        with pytest.raises(ValueError, match="Unsupported wavelet"):
+            ServiceConfig(wavelet="bior1.1")

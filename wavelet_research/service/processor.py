@@ -44,20 +44,32 @@ def process_ticks(
     tick_requests: tuple[TickRequest, ...],
     engine_config: WaveletEngineConfig,
     trend_mode: TrendMode = TrendMode.A2,
+    wavelet_override: str | None = None,
+    window_override: int | None = None,
+    level_override: int | None = None,
 ) -> WaveletResponse:
     """Run the Wavelet Engine over a batch of ticks and return arrays.
 
     Positions before the engine warms up are filled with 0.0.
     All output arrays have length == len(tick_requests).
 
+    Per-request overrides (wavelet_override, window_override, level_override)
+    take precedence over the values in engine_config when provided.
+
     Parameters
     ----------
     tick_requests : tuple[TickRequest, ...]
         Validated tick sequence.
     engine_config : WaveletEngineConfig
-        Engine configuration (wavelet, window, level, vol_window).
+        Service-level engine configuration (provides defaults).
     trend_mode : TrendMode
         Wavelet approximation level for trend reconstruction. Defaults to A2.
+    wavelet_override : str | None
+        Per-request wavelet family. Overrides engine_config.wavelet if set.
+    window_override : int | None
+        Per-request window size. Overrides engine_config.window if set.
+    level_override : int | None
+        Per-request decomposition level. Overrides engine_config.level if set.
 
     Returns
     -------
@@ -65,9 +77,9 @@ def process_ticks(
         All output arrays with equal length.
     """
     config_with_mode = WaveletEngineConfig(
-        wavelet=engine_config.wavelet,
-        window=engine_config.window,
-        level=engine_config.level,
+        wavelet=wavelet_override if wavelet_override is not None else engine_config.wavelet,
+        window=window_override if window_override is not None else engine_config.window,
+        level=level_override if level_override is not None else engine_config.level,
         volatility_window=engine_config.volatility_window,
         trend_mode=trend_mode,
     )

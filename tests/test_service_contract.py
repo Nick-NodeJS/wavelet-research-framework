@@ -353,8 +353,8 @@ class TestServiceSmoke:
         assert resp.status_code == 400
 
     def test_unsupported_wavelet_config_rejected(self) -> None:
-        with pytest.raises(ValueError, match="db4"):
-            ServiceConfig(wavelet="haar")
+        with pytest.raises(ValueError, match="Unsupported wavelet"):
+            ServiceConfig(wavelet="bior1.1")
 
     def test_error_response_contains_error_field(self) -> None:
         client = _make_client()

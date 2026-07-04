@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from wavelet_research.engine.config import (
+    SUPPORTED_LEVELS,
+    SUPPORTED_WAVELETS,
+    SUPPORTED_WINDOWS,
+)
 from wavelet_research.engine.decomposition import SUPPORTED_TREND_MODES
 from wavelet_research.service.models import TickRequest, WaveletRequest
 
@@ -77,15 +82,117 @@ def parse_tick(raw: object, index: int) -> TickRequest:
     return TickRequest(time=time_val, bid=bid, ask=ask, mid=mid)
 
 
+def _parse_optional_window(body: dict) -> int | None:
+    """Parse and validate the optional 'window' override field.
+
+    Parameters
+    ----------
+    body : dict
+        Parsed request body.
+
+    Returns
+    -------
+    int | None
+        Validated window size, or None if not provided.
+
+    Raises
+    ------
+    RequestValidationError
+        If provided but invalid.
+    """
+    raw = body.get("window")
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise RequestValidationError(
+            f"'window' must be an integer, got {type(raw).__name__}"
+        )
+    if raw not in SUPPORTED_WINDOWS:
+        raise RequestValidationError(
+            f"Invalid window {raw}. Supported values: {sorted(SUPPORTED_WINDOWS)}"
+        )
+    return raw
+
+
+def _parse_optional_wavelet(body: dict) -> str | None:
+    """Parse and validate the optional 'wavelet' override field.
+
+    Parameters
+    ----------
+    body : dict
+        Parsed request body.
+
+    Returns
+    -------
+    str | None
+        Validated wavelet name, or None if not provided.
+
+    Raises
+    ------
+    RequestValidationError
+        If provided but invalid.
+    """
+    raw = body.get("wavelet")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise RequestValidationError(
+            f"'wavelet' must be a string, got {type(raw).__name__}"
+        )
+    wavelet = raw.lower()
+    if wavelet not in SUPPORTED_WAVELETS:
+        raise RequestValidationError(
+            f"Invalid wavelet {raw!r}. Supported values: {sorted(SUPPORTED_WAVELETS)}"
+        )
+    return wavelet
+
+
+def _parse_optional_level(body: dict) -> int | None:
+    """Parse and validate the optional 'level' override field.
+
+    Parameters
+    ----------
+    body : dict
+        Parsed request body.
+
+    Returns
+    -------
+    int | None
+        Validated decomposition level, or None if not provided.
+
+    Raises
+    ------
+    RequestValidationError
+        If provided but invalid.
+    """
+    raw = body.get("level")
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise RequestValidationError(
+            f"'level' must be an integer, got {type(raw).__name__}"
+        )
+    if raw not in SUPPORTED_LEVELS:
+        raise RequestValidationError(
+            f"Invalid level {raw}. Supported values: {sorted(SUPPORTED_LEVELS)}"
+        )
+    return raw
+
+
 def parse_wavelet_request(body: object, min_ticks: int) -> WaveletRequest:
     """Parse and validate the full /wavelet request body.
+
+    Per-request 'window', 'wavelet', 'level', and 'trend_mode' fields are
+    optional.  When provided they override the service startup defaults.
+    The tick count is checked against the effective window (per-request
+    window if provided, otherwise ``min_ticks``).
 
     Parameters
     ----------
     body : object
         Parsed JSON body (expected dict).
     min_ticks : int
-        Minimum required number of ticks (equal to engine window size).
+        Minimum required ticks based on service default window.
 
     Returns
     -------
@@ -113,10 +220,18 @@ def parse_wavelet_request(body: object, min_ticks: int) -> WaveletRequest:
     # Validate individual ticks first so price errors always return 400
     ticks = tuple(parse_tick(t, i) for i, t in enumerate(raw_ticks))
 
-    if len(ticks) < min_ticks:
+    # Optional per-request engine overrides — validate before the tick count
+    # check so that a bad window value gets a clear 400 rather than a 422
+    req_window = _parse_optional_window(body)
+    req_wavelet = _parse_optional_wavelet(body)
+    req_level = _parse_optional_level(body)
+
+    # Effective minimum = per-request window if provided, else service default
+    effective_min = req_window if req_window is not None else min_ticks
+    if len(ticks) < effective_min:
         raise RequestValidationError(
             f"Insufficient history: {len(ticks)} ticks provided, "
-            f"minimum required is {min_ticks}",
+            f"minimum required is {effective_min}",
             http_status=422,
         )
 
@@ -132,4 +247,10 @@ def parse_wavelet_request(body: object, min_ticks: int) -> WaveletRequest:
             f"Supported values: {sorted(SUPPORTED_TREND_MODES)}"
         )
 
-    return WaveletRequest(ticks=ticks, trend_mode=trend_mode)
+    return WaveletRequest(
+        ticks=ticks,
+        trend_mode=trend_mode,
+        window=req_window,
+        wavelet=req_wavelet,
+        level=req_level,
+    )

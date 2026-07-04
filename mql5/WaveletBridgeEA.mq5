@@ -31,11 +31,15 @@
 
 //--- Inputs
 input string InpServerUrl         = "http://127.0.0.1:5000";  // Server URL
-input int    InpTickWindow        = 2048;                      // Tick Window
+input int    InpTickWindow        = 2048;                      // Tick Window (MT5 local buffer)
 input int    InpRequestTimeoutMs  = 800;                       // Timeout (ms)
 input int    InpHealthIntervalSec = 30;                        // Health Check Interval (s)
 input bool   InpVerboseLog        = false;                     // Verbose Logging
+//--- Calibration inputs (sent to Python per-request)
 input string InpTrendMode         = "A2";                      // Trend Mode (A1/A2/A3/A4)
+input string InpWavelet           = "db4";                     // Wavelet (db2/db4/db6/sym4/sym6/coif1)
+input int    InpWaveletWindow     = 256;                       // Window (128/256/512/1024/2048)
+input int    InpLevel             = 2;                         // Level (1/2/3/4)
 
 //--- Global Variable key prefix
 #define GV_PREFIX        "Wv_"
@@ -64,6 +68,33 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
+   //--- Validate wavelet
+   string wv = InpWavelet;
+   StringToLower(wv);
+   if (wv != "db2" && wv != "db4" && wv != "db6" &&
+       wv != "sym4" && wv != "sym6" &&
+       wv != "coif1" && wv != "coif3")
+   {
+      Print("WaveletBridgeEA: invalid InpWavelet '", InpWavelet, "'");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   //--- Validate window
+   if (InpWaveletWindow != 128  && InpWaveletWindow != 256  &&
+       InpWaveletWindow != 512  && InpWaveletWindow != 1024 &&
+       InpWaveletWindow != 2048)
+   {
+      Print("WaveletBridgeEA: invalid InpWaveletWindow ", InpWaveletWindow);
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
+   //--- Validate level
+   if (InpLevel < 1 || InpLevel > 4)
+   {
+      Print("WaveletBridgeEA: invalid InpLevel ", InpLevel, " — must be 1-4");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
    EventSetMillisecondTimer(200);
    _WriteStatus(false, 0, 0);
    //--- Store mode as numeric: A1=1, A2=2, A3=3, A4=4
@@ -71,7 +102,11 @@ int OnInit()
    StringToUpper(m);
    double mode_num = (m == "A1") ? 1.0 : (m == "A3") ? 3.0 : (m == "A4") ? 4.0 : 2.0;
    GlobalVariableSet(GV_TREND_MODE, mode_num);
-   Print("WaveletBridgeEA: started server=", InpServerUrl, " mode=", InpTrendMode);
+   Print("WaveletBridgeEA: started server=", InpServerUrl,
+         " wavelet=", InpWavelet,
+         " window=", InpWaveletWindow,
+         " level=", InpLevel,
+         " mode=", InpTrendMode);
 
    //--- Health check on startup
    _DoHealthCheck();
@@ -180,10 +215,16 @@ void _DoWaveletRequest()
            +  "\"mid\":"  + DoubleToString(mid, _Digits) + "}";
       if (i < copied - 1) json += ",";
    }
-   //--- Close ticks array and add trend_mode as sibling field
+   //--- Close ticks array and add calibration fields as sibling fields
    string mode_upper = InpTrendMode;
    StringToUpper(mode_upper);
-   json += "],\"trend_mode\":\"" + mode_upper + "\"}";
+   string wv_lower = InpWavelet;
+   StringToLower(wv_lower);
+   json += "],"
+        +  "\"trend_mode\":\"" + mode_upper + "\","
+        +  "\"wavelet\":\""    + wv_lower   + "\","
+        +  "\"window\":"        + IntegerToString(InpWaveletWindow) + ","
+        +  "\"level\":"         + IntegerToString(InpLevel)         + "}";
 
    //--- Execute HTTP POST
    char   post_data[];

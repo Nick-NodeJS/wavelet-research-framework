@@ -111,12 +111,23 @@ def _register_wavelet(app: Flask, config: ServiceConfig, engine_config) -> None:
             return jsonify({"error": str(exc)}), exc.http_status
 
         trend_mode = TrendMode(wavelet_request.trend_mode)
-        result = process_ticks(wavelet_request.ticks, engine_config, trend_mode)
+        result = process_ticks(
+            wavelet_request.ticks,
+            engine_config,
+            trend_mode,
+            wavelet_override=wavelet_request.wavelet,
+            window_override=wavelet_request.window,
+            level_override=wavelet_request.level,
+        )
 
         elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+        effective_window = wavelet_request.window or engine_config.window
+        effective_wavelet = wavelet_request.wavelet or engine_config.wavelet
+        effective_level = wavelet_request.level or engine_config.level
         logger.info(
-            "POST /wavelet ticks=%d mode=%s elapsed_ms=%.2f",
-            len(wavelet_request.ticks), trend_mode.value, elapsed_ms,
+            "POST /wavelet window=%d wavelet=%s level=%d mode=%s elapsed_ms=%.2f",
+            effective_window, effective_wavelet, effective_level,
+            trend_mode.value, elapsed_ms,
         )
 
         return jsonify(result.to_dict())

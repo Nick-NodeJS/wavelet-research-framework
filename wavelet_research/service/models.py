@@ -38,10 +38,19 @@ class WaveletRequest:
     trend_mode : str
         Wavelet approximation level for trend reconstruction.
         One of "A1", "A2", "A3", "A4". Defaults to "A2".
+    window : int | None
+        Rolling window size override. If None, service default is used.
+    wavelet : str | None
+        Wavelet family override. If None, service default is used.
+    level : int | None
+        Decomposition level override. If None, service default is used.
     """
 
     ticks: tuple[TickRequest, ...]
     trend_mode: str = "A2"
+    window: int | None = None
+    wavelet: str | None = None
+    level: int | None = None
 
 
 @dataclass(frozen=True)
