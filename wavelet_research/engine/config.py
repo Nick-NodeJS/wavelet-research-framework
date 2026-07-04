@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from wavelet_research.engine.decomposition import (
+    DEFAULT_TREND_MODE,
+    SUPPORTED_TREND_MODES,
+    TrendMode,
+)
+
 SUPPORTED_WAVELETS: frozenset[str] = frozenset({
     "haar", "db4", "db6", "sym4", "coif3",
 })
@@ -38,6 +44,7 @@ class WaveletEngineConfig:
     window: int
     level: int
     volatility_window: int = 256
+    trend_mode: TrendMode = DEFAULT_TREND_MODE
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""
@@ -56,4 +63,9 @@ class WaveletEngineConfig:
         if self.volatility_window < 1:
             raise ValueError(
                 f"volatility_window must be >= 1, got {self.volatility_window}"
+            )
+        if self.trend_mode not in TrendMode.__members__.values():
+            raise ValueError(
+                f"Unsupported trend_mode: {self.trend_mode!r}. "
+                f"Supported: {sorted(SUPPORTED_TREND_MODES)}"
             )

@@ -35,6 +35,7 @@ input int    InpTickWindow        = 2048;                      // Tick Window
 input int    InpRequestTimeoutMs  = 800;                       // Timeout (ms)
 input int    InpHealthIntervalSec = 30;                        // Health Check Interval (s)
 input bool   InpVerboseLog        = false;                     // Verbose Logging
+input string InpTrendMode         = "A2";                      // Trend Mode (A1/A2/A3/A4)
 
 //--- Global Variable key prefix
 #define GV_PREFIX        "Wv_"
@@ -43,6 +44,7 @@ input bool   InpVerboseLog        = false;                     // Verbose Loggin
 #define GV_LATENCY       "Wv_Latency"
 #define GV_HTTP_CODE     "Wv_LastHttpCode"
 #define GV_TREND_N       "Wv_Trend_N"
+#define GV_TREND_MODE    "Wv_TrendMode"
 
 //--- Internal state
 datetime g_last_bar_time    = 0;
@@ -53,9 +55,23 @@ int      g_stored_count     = 0;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   //--- Validate trend mode
+   string mode = InpTrendMode;
+   StringToUpper(mode);
+   if (mode != "A1" && mode != "A2" && mode != "A3" && mode != "A4")
+   {
+      Print("WaveletBridgeEA: invalid InpTrendMode '", InpTrendMode, "' — must be A1/A2/A3/A4");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
    EventSetMillisecondTimer(200);
    _WriteStatus(false, 0, 0);
-   Print("WaveletBridgeEA: started, server=", InpServerUrl);
+   //--- Store mode as numeric: A1=1, A2=2, A3=3, A4=4
+   string m = InpTrendMode;
+   StringToUpper(m);
+   double mode_num = (m == "A1") ? 1.0 : (m == "A3") ? 3.0 : (m == "A4") ? 4.0 : 2.0;
+   GlobalVariableSet(GV_TREND_MODE, mode_num);
+   Print("WaveletBridgeEA: started server=", InpServerUrl, " mode=", InpTrendMode);
 
    //--- Health check on startup
    _DoHealthCheck();
@@ -164,7 +180,10 @@ void _DoWaveletRequest()
            +  "\"mid\":"  + DoubleToString(mid, _Digits) + "}";
       if (i < copied - 1) json += ",";
    }
-   json += "]}";
+   //--- Close ticks array and add trend_mode as sibling field
+   string mode_upper = InpTrendMode;
+   StringToUpper(mode_upper);
+   json += "],\"trend_mode\":\"" + mode_upper + "\"}";
 
    //--- Execute HTTP POST
    char   post_data[];

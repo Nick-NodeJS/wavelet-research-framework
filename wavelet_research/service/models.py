@@ -35,9 +35,13 @@ class WaveletRequest:
     ----------
     ticks : tuple[TickRequest, ...]
         Sequence of normalized ticks.
+    trend_mode : str
+        Wavelet approximation level for trend reconstruction.
+        One of "A1", "A2", "A3", "A4". Defaults to "A2".
     """
 
     ticks: tuple[TickRequest, ...]
+    trend_mode: str = "A2"
 
 
 @dataclass(frozen=True)

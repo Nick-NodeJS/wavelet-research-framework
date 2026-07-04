@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from wavelet_research.engine.decomposition import SUPPORTED_TREND_MODES
 from wavelet_research.service.models import TickRequest, WaveletRequest
 
 
@@ -119,4 +120,16 @@ def parse_wavelet_request(body: object, min_ticks: int) -> WaveletRequest:
             http_status=422,
         )
 
-    return WaveletRequest(ticks=ticks)
+    raw_mode = body.get("trend_mode", "A2")
+    if not isinstance(raw_mode, str):
+        raise RequestValidationError(
+            "'trend_mode' must be a string, e.g. 'A1', 'A2', 'A3', or 'A4'"
+        )
+    trend_mode = raw_mode.upper()
+    if trend_mode not in SUPPORTED_TREND_MODES:
+        raise RequestValidationError(
+            f"Invalid trend_mode {raw_mode!r}. "
+            f"Supported values: {sorted(SUPPORTED_TREND_MODES)}"
+        )
+
+    return WaveletRequest(ticks=ticks, trend_mode=trend_mode)

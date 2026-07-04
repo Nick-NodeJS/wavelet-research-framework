@@ -10,6 +10,7 @@ import pandas as pd
 
 from wavelet_research.engine.config import WaveletEngineConfig
 from wavelet_research.engine.core import WaveletEngine
+from wavelet_research.engine.decomposition import TrendMode
 from wavelet_research.engine.models import Tick
 from wavelet_research.service.models import TickRequest, WaveletResponse
 
@@ -42,6 +43,7 @@ def _parse_timestamp(raw: str) -> pd.Timestamp:
 def process_ticks(
     tick_requests: tuple[TickRequest, ...],
     engine_config: WaveletEngineConfig,
+    trend_mode: TrendMode = TrendMode.A2,
 ) -> WaveletResponse:
     """Run the Wavelet Engine over a batch of ticks and return arrays.
 
@@ -54,13 +56,22 @@ def process_ticks(
         Validated tick sequence.
     engine_config : WaveletEngineConfig
         Engine configuration (wavelet, window, level, vol_window).
+    trend_mode : TrendMode
+        Wavelet approximation level for trend reconstruction. Defaults to A2.
 
     Returns
     -------
     WaveletResponse
         All output arrays with equal length.
     """
-    engine = WaveletEngine(engine_config)
+    config_with_mode = WaveletEngineConfig(
+        wavelet=engine_config.wavelet,
+        window=engine_config.window,
+        level=engine_config.level,
+        volatility_window=engine_config.volatility_window,
+        trend_mode=trend_mode,
+    )
+    engine = WaveletEngine(config_with_mode)
 
     trend: list[float] = []
     relative_deviation: list[float] = []

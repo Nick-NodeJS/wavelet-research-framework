@@ -30,6 +30,7 @@
 #define GV_LAST_UPDATE "Wv_LastUpdate"
 #define GV_LATENCY     "Wv_Latency"
 #define GV_TREND_N     "Wv_Trend_N"
+#define GV_TREND_MODE  "Wv_TrendMode"
 #define GV_PREFIX      "Wv_"
 
 //--- Input parameters
@@ -97,9 +98,14 @@ int OnCalculate(const int       rates_total,
    //--- Status comment
    if (InpShowStatus)
    {
-      double lat  = GlobalVariableGet(GV_LATENCY);
-      string info = "WaveletTrend: connected | n=" + IntegerToString(n)
-                  + " | lat=" + DoubleToString(lat, 1) + "ms";
+      double lat       = GlobalVariableGet(GV_LATENCY);
+      double mode_num  = GlobalVariableCheck(GV_TREND_MODE)
+                         ? GlobalVariableGet(GV_TREND_MODE) : 2.0;
+      string mode_str  = (mode_num == 1.0) ? "A1" :
+                         (mode_num == 3.0) ? "A3" :
+                         (mode_num == 4.0) ? "A4" : "A2";
+      string info = "WaveletTrend\nConnected\nMode : " + mode_str
+                  + "\nLatency : " + DoubleToString(lat, 1) + " ms";
       Comment(info);
    }
 

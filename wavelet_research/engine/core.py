@@ -94,7 +94,10 @@ class WaveletEngine:
             values, self._config.wavelet, self._effective_level
         )
         trend_series = reconstruct_trend(
-            coefficients, self._config.wavelet, len(values)
+            coefficients,
+            self._config.wavelet,
+            len(values),
+            approximation_level=int(self._config.trend_mode.value[1:]),
         )
 
         return extract_features(

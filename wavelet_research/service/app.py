@@ -10,6 +10,7 @@ from flask import Flask, Response, jsonify, request
 from wavelet_research.deviation.core import DeviationEngine
 from wavelet_research.deviation_stats.models import DeviationQueryResult
 from wavelet_research.engine.core import WaveletEngine
+from wavelet_research.engine.decomposition import TrendMode
 from wavelet_research.engine.models import Tick
 from wavelet_research.filters.engine import FilterEngine
 from wavelet_research.filters.models import FilterConfig
@@ -109,12 +110,13 @@ def _register_wavelet(app: Flask, config: ServiceConfig, engine_config) -> None:
             logger.warning("Rejected request: %s", exc)
             return jsonify({"error": str(exc)}), exc.http_status
 
-        result = process_ticks(wavelet_request.ticks, engine_config)
+        trend_mode = TrendMode(wavelet_request.trend_mode)
+        result = process_ticks(wavelet_request.ticks, engine_config, trend_mode)
 
         elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
         logger.info(
-            "POST /wavelet ticks=%d elapsed_ms=%.2f",
-            len(wavelet_request.ticks), elapsed_ms,
+            "POST /wavelet ticks=%d mode=%s elapsed_ms=%.2f",
+            len(wavelet_request.ticks), trend_mode.value, elapsed_ms,
         )
 
         return jsonify(result.to_dict())
