@@ -9,7 +9,10 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
+from wavelet_research.deviation.models import DeviationPoint
+from wavelet_research.deviation_stats.models import DeviationQueryResult
 from wavelet_research.engine.models import WaveletPoint
+from wavelet_research.filters.models import FilterResult
 from wavelet_research.signal.config import SignalConfig
 from wavelet_research.signal.models import Signal, SignalDecision
 from wavelet_research.signal.rules import (
@@ -146,6 +149,117 @@ class SignalEngine:
             energy=decision.energy,
             noise=decision.noise,
             metadata=metadata,
+        )
+
+    def decide_with_context(
+        self,
+        point: WaveletPoint,
+        deviation: DeviationPoint,
+        stats: DeviationQueryResult,
+        filter_result: FilterResult,
+    ) -> SignalDecision:
+        """Generate a signal using trend-relative entry rules (Story 22).
+
+        Combines the base threshold rules with:
+        - filter engine gate (can_trade)
+        - minimum normalized deviation
+        - historical return probability gate
+        - minimum stats sample size
+
+        Parameters
+        ----------
+        point : WaveletPoint
+            Current wavelet features.
+        deviation : DeviationPoint
+            Normalized deviation measures.
+        stats : DeviationQueryResult
+            Historical stats for this market state.
+        filter_result : FilterResult
+            Result from the filter engine.
+
+        Returns
+        -------
+        SignalDecision
+            Enriched decision with entry context in metadata.
+        """
+        if not filter_result.can_trade:
+            return SignalDecision(
+                signal=Signal.HOLD,
+                confidence=0.0,
+                reason="filter_blocked",
+                z_score=point.z_score,
+                trend_slope=point.slope,
+                energy=point.energy,
+                noise=point.noise,
+                metadata={
+                    "filter_reasons": [r.value for r in filter_result.reasons],
+                    "normalized_deviation": deviation.z_score,
+                    "historical_probability": stats.return_to_trend_probability,
+                    "expected_bars_to_return": stats.median_bars_to_return,
+                },
+            )
+
+        if abs(deviation.z_score) < self._config.min_normalized_deviation:
+            return SignalDecision(
+                signal=Signal.HOLD,
+                confidence=0.0,
+                reason="deviation_too_small",
+                z_score=point.z_score,
+                trend_slope=point.slope,
+                energy=point.energy,
+                noise=point.noise,
+                metadata={"normalized_deviation": deviation.z_score},
+            )
+
+        if stats.sample_size < self._config.min_stats_sample_size:
+            return SignalDecision(
+                signal=Signal.HOLD,
+                confidence=0.0,
+                reason="insufficient_history",
+                z_score=point.z_score,
+                trend_slope=point.slope,
+                energy=point.energy,
+                noise=point.noise,
+                metadata={"sample_size": stats.sample_size},
+            )
+
+        if stats.return_to_trend_probability < self._config.min_return_probability:
+            return SignalDecision(
+                signal=Signal.HOLD,
+                confidence=0.0,
+                reason="low_return_probability",
+                z_score=point.z_score,
+                trend_slope=point.slope,
+                energy=point.energy,
+                noise=point.noise,
+                metadata={"historical_probability": stats.return_to_trend_probability},
+            )
+
+        base_decision = self.decide(point)
+
+        if base_decision.signal == Signal.HOLD:
+            return base_decision
+
+        meta = dict(base_decision.metadata)
+        meta["normalized_deviation"] = deviation.z_score
+        meta["historical_probability"] = stats.return_to_trend_probability
+        meta["expected_bars_to_return"] = stats.median_bars_to_return
+        meta["filter_reasons"] = []
+        meta["entry_reason"] = (
+            "below_trend_return_probability"
+            if base_decision.signal == Signal.BUY
+            else "above_trend_return_probability"
+        )
+
+        return SignalDecision(
+            signal=base_decision.signal,
+            confidence=base_decision.confidence,
+            reason=base_decision.reason,
+            z_score=base_decision.z_score,
+            trend_slope=base_decision.trend_slope,
+            energy=base_decision.energy,
+            noise=base_decision.noise,
+            metadata=meta,
         )
 
     def _evaluate_signal(

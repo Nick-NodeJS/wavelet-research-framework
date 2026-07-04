@@ -234,6 +234,37 @@ def check_exit(
             if position.side == Signal.SELL and tick.mid <= wavelet_point.trend:
                 return "return_to_trend"
 
+    elif config.exit_strategy == ExitStrategy.DEVIATION_NORMALIZED:
+        if wavelet_point is not None:
+            dist = abs(tick.mid - wavelet_point.trend)
+            norm = dist / max(abs(wavelet_point.z_score), 1e-9)
+            if norm <= config.exit_deviation_threshold:
+                return "deviation_normalized"
+
+    elif config.exit_strategy == ExitStrategy.MAX_ADVERSE_MOVE:
+        if wavelet_point is not None:
+            if abs(wavelet_point.z_score) >= config.max_adverse_normalized_deviation:
+                return "max_adverse_move"
+
+    elif config.exit_strategy == ExitStrategy.TREND_INVALIDATION:
+        if wavelet_point is not None:
+            if position.side == Signal.BUY and wavelet_point.slope < 0:
+                return "trend_invalidation"
+            if position.side == Signal.SELL and wavelet_point.slope > 0:
+                return "trend_invalidation"
+
+    elif config.exit_strategy == ExitStrategy.COMBINED:
+        if wavelet_point is not None:
+            # Return to trend
+            if config.exit_on_trend_touch:
+                if position.side == Signal.BUY and tick.mid >= wavelet_point.trend:
+                    return "return_to_trend"
+                if position.side == Signal.SELL and tick.mid <= wavelet_point.trend:
+                    return "return_to_trend"
+            # Adverse move stop
+            if abs(wavelet_point.z_score) >= config.max_adverse_normalized_deviation:
+                return "max_adverse_move"
+
     return None
 
 

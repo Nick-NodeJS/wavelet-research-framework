@@ -7,13 +7,23 @@ import time
 
 from flask import Flask, Response, jsonify, request
 
+from wavelet_research.deviation.core import DeviationEngine
+from wavelet_research.deviation_stats.models import DeviationQueryResult
+from wavelet_research.engine.core import WaveletEngine
+from wavelet_research.engine.models import Tick
+from wavelet_research.filters.engine import FilterEngine
+from wavelet_research.filters.models import FilterConfig
 from wavelet_research.service.config import ServiceConfig
 from wavelet_research.service.models import HealthResponse
-from wavelet_research.service.processor import process_ticks
+from wavelet_research.service.processor import _parse_timestamp, process_ticks
 from wavelet_research.service.validation import (
     RequestValidationError,
     parse_wavelet_request,
 )
+from wavelet_research.signal.config import SignalConfig
+from wavelet_research.signal.core import SignalEngine
+from wavelet_research.trend_quality.audit import TrendAuditor
+from wavelet_research.trend_quality.models import TrendQualityState
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +51,7 @@ def create_app(config: ServiceConfig | None = None) -> Flask:
 
     _register_health(app, config)
     _register_wavelet(app, config, engine_config)
+    _register_market_state(app, config, engine_config)
 
     logger.info(
         "Wavelet Service created: wavelet=%s window=%d level=%d",
@@ -107,3 +118,98 @@ def _register_wavelet(app: Flask, config: ServiceConfig, engine_config) -> None:
         )
 
         return jsonify(result.to_dict())
+
+
+def _register_market_state(app: Flask, config: ServiceConfig, engine_config) -> None:
+    """Register the /market-state endpoint (Story 25)."""
+
+    deviation_engine = DeviationEngine()
+    signal_engine = SignalEngine(SignalConfig())
+    filter_engine = FilterEngine(FilterConfig())
+    auditor = TrendAuditor(engine_config)
+
+    @app.post("/market-state")
+    def market_state() -> tuple[Response, int] | Response:
+        """Return full real-time market state: trend, deviation, stats, filter, signal.
+
+        Request body:
+            { "symbol": "EURUSD", "ticks": [...], "config_id": "default" }
+
+        Returns
+        -------
+        Response
+            JSON with trend array, deviation, historical_stats, filter, and signal.
+        """
+        start = time.perf_counter_ns()
+
+        body = request.get_json(silent=True)
+        if body is None:
+            return jsonify({"error": "Invalid JSON"}), 400
+
+        try:
+            wavelet_request = parse_wavelet_request(body, min_ticks=config.window)
+        except RequestValidationError as exc:
+            return jsonify({"error": str(exc)}), exc.http_status
+
+        ticks_list = list(wavelet_request.ticks)
+        wavelet_result = process_ticks(wavelet_request.ticks, engine_config)
+
+        last_tr = ticks_list[-1]
+        last_tick = Tick(
+            time=_parse_timestamp(last_tr.time),
+            bid=last_tr.bid,
+            ask=last_tr.ask,
+            mid=last_tr.mid,
+            spread=last_tr.ask - last_tr.bid,
+        )
+
+        from wavelet_research.engine.models import WaveletPoint
+        last_wp = WaveletPoint(
+            trend=wavelet_result.trend[-1],
+            deviation=wavelet_result.relative_deviation[-1],
+            z_score=wavelet_result.z_score[-1],
+            slope=wavelet_result.trend[-1] - wavelet_result.trend[-2] if len(wavelet_result.trend) > 1 else 0.0,
+            energy=wavelet_result.energy[-1],
+            noise=wavelet_result.noise[-1],
+        )
+
+        dp = deviation_engine.compute(last_wp, last_tick)
+
+        empty_stats = DeviationQueryResult(
+            sample_size=0,
+            return_to_trend_probability=0.0,
+            median_bars_to_return=0.0,
+            expected_return=0.0,
+            expected_adverse_excursion=0.0,
+            confidence_level="insufficient",
+        )
+
+        recent_trends = list(wavelet_result.trend[-10:])
+        tq_state = auditor.assess_current(recent_trends)
+
+        filter_result = filter_engine.evaluate(dp, tq_state, empty_stats)
+        decision = signal_engine.decide_with_context(last_wp, dp, empty_stats, filter_result)
+
+        elapsed_ms = (time.perf_counter_ns() - start) / 1_000_000
+        logger.info("POST /market-state elapsed_ms=%.2f", elapsed_ms)
+
+        return jsonify({
+            "trend": wavelet_result.trend,
+            "deviation": {
+                "normalized": dp.z_score,
+                "side": dp.side.value,
+            },
+            "historical_stats": {
+                "sample_size": empty_stats.sample_size,
+                "return_to_trend_probability": empty_stats.return_to_trend_probability,
+                "median_bars_to_return": empty_stats.median_bars_to_return,
+                "confidence_level": empty_stats.confidence_level,
+            },
+            "filter": filter_result.to_dict(),
+            "signal": {
+                "side": decision.signal.value,
+                "confidence": decision.confidence,
+                "reason": decision.reason,
+            },
+            "latency_ms": elapsed_ms,
+        })

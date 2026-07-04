@@ -48,6 +48,13 @@ class SignalConfig:
     min_energy: float = 0.0
     allow_buy: bool = True
     allow_sell: bool = True
+    # Story 22: Trend-relative entry rules
+    min_normalized_deviation: float = 1.0
+    min_return_probability: float = 0.55
+    min_stats_sample_size: int = 50
+    allow_countertrend: bool = False
+    max_spread: float = 0.0003
+    cooldown_bars: int = 5
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""

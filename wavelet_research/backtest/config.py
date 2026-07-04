@@ -13,6 +13,11 @@ class ExitStrategy(str, Enum):
     MAX_HOLD = "max_hold"
     OPPOSITE_SIGNAL = "opposite_signal"
     RETURN_TO_TREND = "return_to_trend"
+    # Story 23: trend-relative exits
+    DEVIATION_NORMALIZED = "deviation_normalized"
+    TREND_INVALIDATION = "trend_invalidation"
+    MAX_ADVERSE_MOVE = "max_adverse_move"
+    COMBINED = "combined"
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,10 @@ class BacktestConfig:
     stop_loss_pips: float = 10.0
     commission_pips: float = 0.0
     slippage_pips: float = 0.0
+    # Story 23: trend-relative exit parameters
+    exit_on_trend_touch: bool = True
+    exit_deviation_threshold: float = 0.2
+    max_adverse_normalized_deviation: float = 2.5
 
     def __post_init__(self) -> None:
         """Validate configuration parameters."""

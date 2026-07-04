@@ -7,6 +7,7 @@ validation, and paper trading sessions.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -29,6 +30,8 @@ from wavelet_research.paper_trading.core import PaperTrader
 from wavelet_research.mt5.expert_advisor import EAConfig
 from wavelet_research.mt5.risk import RiskConfig
 from wavelet_research.signal.config import SignalConfig
+from wavelet_research.research.final_gate import GateConfig, GateMetrics, evaluate_gate
+from wavelet_research.trend_quality.audit import TrendAuditor
 from wavelet_research.validation.core import WalkForwardValidator
 from wavelet_research.validation.splits import SplitConfig
 
@@ -226,6 +229,146 @@ def cmd_paper_trade(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trend_audit(args: argparse.Namespace) -> int:
+    """Run trend quality audit on historical data."""
+    _setup_logging(args.verbose)
+    data = _load_data(args.ticks)
+
+    engine_config = WaveletEngineConfig(
+        wavelet=args.wavelet, window=args.window, level=args.level,
+    )
+    auditor = TrendAuditor(engine_config)
+    report = auditor.audit(data)
+
+    result = report.to_dict()
+    print(json.dumps(result, indent=2))
+
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(result, indent=2))
+        print(f"Report saved: {args.output}")
+
+    return 0 if report.recommendation.value != "fail" else 1
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """Derive conservative thresholds from historical data."""
+    _setup_logging(args.verbose)
+    data = _load_data(args.ticks)
+
+    # Deterministic grid search over key thresholds
+    from wavelet_research.backtest.core import BacktestEngine
+    from wavelet_research.engine.core import WaveletEngine
+    from wavelet_research.signal.core import SignalEngine
+
+    best_score = -1.0
+    best_cfg: dict = {}
+
+    for min_dev in (0.8, 1.0, 1.2, 1.5):
+        for max_hold in (10, 20, 40):
+            eng_cfg = WaveletEngineConfig(wavelet=args.wavelet, window=args.window, level=2)
+            sig_cfg = SignalConfig(
+                buy_z_threshold=min_dev,
+                sell_z_threshold=min_dev,
+                slope_filter_enabled=False,
+                min_normalized_deviation=min_dev,
+                min_return_probability=0.55,
+                min_stats_sample_size=30,
+            )
+            bt_cfg = BacktestConfig(
+                pip_size=0.00001,
+                exit_strategy=ExitStrategy.RETURN_TO_TREND,
+                max_hold_ticks=max_hold,
+            )
+            try:
+                engine = WaveletEngine(eng_cfg)
+                signal_engine = SignalEngine(sig_cfg)
+                bt_engine = BacktestEngine(bt_cfg)
+                report = bt_engine.run(data, engine, signal_engine)
+                if report.trades < 5:
+                    continue
+                score = report.profit_factor * (1.0 - abs(report.max_drawdown) / max(abs(report.total_pnl), 1.0))
+                if score > best_score:
+                    best_score = score
+                    best_cfg = {
+                        "symbol": args.symbol,
+                        "wavelet": args.wavelet,
+                        "window": args.window,
+                        "entry": {
+                            "min_normalized_deviation": min_dev,
+                            "min_return_probability": 0.55,
+                            "min_stats_sample_size": 30,
+                        },
+                        "exit": {
+                            "exit_strategy": "return_to_trend",
+                            "max_holding_bars": max_hold,
+                            "max_adverse_normalized_deviation": 2.5,
+                        },
+                        "filters": {
+                            "max_spread": 0.0003,
+                            "cooldown_bars": 5,
+                        },
+                        "validation_summary": {
+                            "trades": report.trades,
+                            "profit_factor": report.profit_factor,
+                            "total_pnl": report.total_pnl,
+                            "score": score,
+                        },
+                    }
+            except Exception as exc:
+                logger.debug("Config failed: %s", exc)
+
+    if not best_cfg:
+        print("No valid configuration found")
+        return 1
+
+    print(json.dumps(best_cfg, indent=2))
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(best_cfg, indent=2))
+        print(f"Config saved: {args.output}")
+    return 0
+
+
+def cmd_final_gate(args: argparse.Namespace) -> int:
+    """Run the final statistical gate."""
+    _setup_logging(args.verbose)
+
+    metrics = GateMetrics(
+        total_trades=args.trades,
+        profit_factor=args.profit_factor,
+        expectancy=args.expectancy,
+        max_drawdown=args.max_drawdown_val,
+        gross_profit=max(args.gross_profit, 0.01),
+        avg_holding_bars=args.avg_holding,
+        monte_carlo_survival=args.mc_survival,
+        walk_forward_stability=args.wf_stability,
+        paper_consistency=args.paper_consistency,
+    )
+    config = GateConfig(
+        min_trades=args.min_trades_gate,
+        min_profit_factor=args.min_pf,
+        min_expectancy=args.min_exp,
+        max_drawdown_pct=args.max_dd_pct,
+        min_monte_carlo_survival=args.min_mc,
+        min_walk_forward_stability=args.min_wf,
+        min_paper_consistency=args.min_paper,
+    )
+    result = evaluate_gate(metrics, config)
+    output = result.to_dict()
+    print(json.dumps(output, indent=2))
+
+    if args.output:
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(output, indent=2))
+        print(f"Gate report saved: {args.output}")
+
+    return 0 if result.decision.value == "PASS" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser.
 
@@ -241,6 +384,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Trend Audit
+    trend_audit = subparsers.add_parser("trend-audit", help="Audit trend quality")
+    trend_audit.add_argument("--ticks", required=True, help="Path to tick CSV")
+    trend_audit.add_argument("--wavelet", default="db4")
+    trend_audit.add_argument("--window", type=int, default=512)
+    trend_audit.add_argument("--level", type=int, default=2)
+    trend_audit.add_argument("--output", default=None, help="Output JSON path")
+
+    # Calibrate
+    calibrate = subparsers.add_parser("calibrate-trend-strategy", help="Calibrate thresholds")
+    calibrate.add_argument("--ticks", required=True, help="Path to tick CSV")
+    calibrate.add_argument("--wavelet", default="db4")
+    calibrate.add_argument("--window", type=int, default=512)
+    calibrate.add_argument("--symbol", default="UNKNOWN")
+    calibrate.add_argument("--output", default=None, help="Output JSON path")
+
+    # Final Gate
+    gate = subparsers.add_parser("final-gate", help="Run final statistical gate")
+    gate.add_argument("--trades", type=int, required=True)
+    gate.add_argument("--profit-factor", type=float, required=True)
+    gate.add_argument("--expectancy", type=float, required=True)
+    gate.add_argument("--max-drawdown-val", type=float, required=True)
+    gate.add_argument("--gross-profit", type=float, required=True)
+    gate.add_argument("--avg-holding", type=float, default=15.0)
+    gate.add_argument("--mc-survival", type=float, default=0.75)
+    gate.add_argument("--wf-stability", type=float, default=0.65)
+    gate.add_argument("--paper-consistency", type=float, default=0.75)
+    gate.add_argument("--min-trades-gate", type=int, default=50)
+    gate.add_argument("--min-pf", type=float, default=1.3)
+    gate.add_argument("--min-exp", type=float, default=0.0)
+    gate.add_argument("--max-dd-pct", type=float, default=0.30)
+    gate.add_argument("--min-mc", type=float, default=0.70)
+    gate.add_argument("--min-wf", type=float, default=0.60)
+    gate.add_argument("--min-paper", type=float, default=0.70)
+    gate.add_argument("--output", default=None, help="Output JSON path")
 
     # Research
     research = subparsers.add_parser("research", help="Run research experiments")
@@ -319,6 +498,9 @@ def main() -> int:
         "optimize": cmd_optimize,
         "validate": cmd_validate,
         "paper-trade": cmd_paper_trade,
+        "trend-audit": cmd_trend_audit,
+        "calibrate-trend-strategy": cmd_calibrate,
+        "final-gate": cmd_final_gate,
     }
 
     handler = commands.get(args.command)
