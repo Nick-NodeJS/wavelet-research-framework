@@ -14,6 +14,31 @@ from wavelet_research.engine.models import Tick
 from wavelet_research.service.models import TickRequest, WaveletResponse
 
 
+def _parse_timestamp(raw: str) -> pd.Timestamp:
+    """Parse a timestamp string into a pd.Timestamp.
+
+    Accepts:
+    - ISO 8601 strings: ``"2026-07-04T12:00:00.123"``
+    - Raw millisecond integers as strings: ``"1751670000000"`` (sent by MT5)
+
+    Parameters
+    ----------
+    raw : str
+        Raw time value from the request.
+
+    Returns
+    -------
+    pd.Timestamp
+        Parsed timestamp, or ``pd.Timestamp.now()`` if empty.
+    """
+    if not raw:
+        return pd.Timestamp.now()
+    # If the string is a pure integer it is a Unix millisecond timestamp
+    if raw.isdigit():
+        return pd.Timestamp(int(raw), unit="ms")
+    return pd.Timestamp(raw)
+
+
 def process_ticks(
     tick_requests: tuple[TickRequest, ...],
     engine_config: WaveletEngineConfig,
@@ -45,7 +70,7 @@ def process_ticks(
 
     for tr in tick_requests:
         tick = Tick(
-            time=pd.Timestamp(tr.time) if tr.time else pd.Timestamp.now(),
+            time=_parse_timestamp(tr.time),
             bid=tr.bid,
             ask=tr.ask,
             mid=tr.mid,
