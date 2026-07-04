@@ -2,13 +2,18 @@
 //| WaveletOscillator.mq5                                            |
 //| MT5 Oscillator — separate window for deviation/z-score/energy   |
 //|                                                                  |
-//| Use alongside WaveletThinIndicator.mq5.                          |
+//| Responsibilities (post Architecture Fix):                        |
+//|   - Read RelDev, ZScore, Energy from Global Variables (EA)       |
+//|   - Render oscillator lines in a separate chart window           |
+//|   - Display connection status from EA                            |
 //|                                                                  |
-//| No wavelet calculations exist here.                              |
-//| All computation is delegated to the Python service.              |
+//| No HTTP. No JSON. No WebRequest.                                 |
+//| All data is provided by WaveletBridgeEA via Global Variables.   |
+//|                                                                  |
+//| Requires WaveletBridgeEA.mq5 to be running on the same chart.   |
 //+------------------------------------------------------------------+
 #property copyright   "Wavelet Research"
-#property version     "1.10"
+#property version     "2.00"
 #property indicator_separate_window
 #property indicator_buffers 3
 #property indicator_plots   3
@@ -34,25 +39,23 @@
 #property indicator_style3  STYLE_SOLID
 #property indicator_width3  1
 
-//--- Input parameters (same as WaveletThinIndicator)
-input string InpServerUrl          = "http://127.0.0.1:5000";  // Server URL
-input int    InpTickWindow         = 2048;                      // Tick Window
-input int    InpRequestTimeoutMs   = 500;                       // Request Timeout (ms)
-input bool   InpAutoRefresh        = true;                      // Auto Refresh
-input bool   InpDrawRelDeviation   = true;                      // Draw Relative Deviation
-input bool   InpDrawZScore         = true;                      // Draw Z-Score
-input bool   InpDrawEnergy         = true;                      // Draw Energy
+//--- Global Variable keys (must match WaveletBridgeEA)
+#define GV_STATUS    "Wv_Status"
+#define GV_LATENCY   "Wv_Latency"
+#define GV_TREND_N   "Wv_Trend_N"
+#define GV_PREFIX    "Wv_"
+
+//--- Input parameters
+input bool InpDrawRelDeviation = true;   // Draw Relative Deviation
+input bool InpDrawZScore       = true;   // Draw Z-Score
+input bool InpDrawEnergy       = true;   // Draw Energy
+input bool InpShowStatus       = true;   // Show status comment
 
 //--- Indicator buffers
 double BufferRelDev[];
 double BufferZScore[];
 double BufferEnergy[];
 
-//--- State
-string g_status = "Connecting...";
-
-//+------------------------------------------------------------------+
-//| Custom indicator initialization function                         |
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -64,16 +67,14 @@ int OnInit()
    ArraySetAsSeries(BufferZScore, true);
    ArraySetAsSeries(BufferEnergy, true);
 
-   PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, InpTickWindow);
-   PlotIndexSetInteger(1, PLOT_DRAW_BEGIN, InpTickWindow);
-   PlotIndexSetInteger(2, PLOT_DRAW_BEGIN, InpTickWindow);
-
    IndicatorSetString(INDICATOR_SHORTNAME, "WaveletOsc");
+
+   if (InpShowStatus)
+      Comment("WaveletOsc: waiting for WaveletBridgeEA...");
+
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| Custom indicator iteration function                              |
 //+------------------------------------------------------------------+
 int OnCalculate(const int       rates_total,
                 const int       prev_calculated,
@@ -86,116 +87,59 @@ int OnCalculate(const int       rates_total,
                 const long&     volume[],
                 const int&      spread[])
 {
-   if (!InpAutoRefresh && prev_calculated > 0)
-      return rates_total;
+   //--- Read connection status from EA
+   bool connected = (GlobalVariableGet(GV_STATUS) >= 1.0);
 
-   int n_ticks = MathMin(InpTickWindow, rates_total);
-   if (n_ticks < 1)
-      return 0;
-
-   MqlTick ticks_arr[];
-   int copied = CopyTicks(_Symbol, ticks_arr, COPY_TICKS_ALL, 0, n_ticks);
-   if (copied <= 0)
+   if (!connected)
    {
-      Comment("WaveletOsc: Connecting...");
+      if (InpShowStatus)
+         Comment("WaveletOsc: EA disconnected — waiting");
       return 0;
    }
 
-   //--- Build JSON payload with millisecond timestamps and _Digits precision
-   string json = "{\"ticks\":[";
-   for (int i = 0; i < copied; i++)
-   {
-      double bid = ticks_arr[i].bid;
-      double ask = ticks_arr[i].ask;
-      double mid = (bid + ask) / 2.0;
-      string ts_ms = IntegerToString(ticks_arr[i].time);
-
-      json += "{\"time\":\"" + ts_ms + "\","
-           +  "\"bid\":"    + DoubleToString(bid, _Digits) + ","
-           +  "\"ask\":"    + DoubleToString(ask, _Digits) + ","
-           +  "\"mid\":"    + DoubleToString(mid, _Digits) + "}";
-      if (i < copied - 1) json += ",";
-   }
-   json += "]}";
-
-   //--- POST to service
-   char   post_data[];
-   char   response_data[];
-   string response_headers;
-
-   StringToCharArray(json, post_data, 0, StringLen(json));
-   ArrayResize(post_data, StringLen(json));
-
-   string headers  = "Content-Type: application/json\r\n";
-   string endpoint = InpServerUrl + "/wavelet";
-
-   int http_code = WebRequest(
-      "POST", endpoint, headers, InpRequestTimeoutMs,
-      post_data, response_data, response_headers
-   );
-
-   if (http_code != 200)
-   {
-      string s = (http_code == -1)   ? "Service Offline" :
-                 (http_code == 408)  ? "Timeout"         :
-                 "Error " + IntegerToString(http_code);
-      Comment("WaveletOsc: " + s);
+   //--- Read how many values the EA stored
+   int n = (int)GlobalVariableGet(GV_TREND_N);
+   if (n <= 0)
       return 0;
-   }
 
-   //--- Parse response
-   string response_str = CharArrayToString(response_data);
+   int limit = MathMin(n, rates_total);
 
-   double rel_dev_vals[];
-   double z_score_vals[];
-   double energy_vals[];
-
-   if (!_ExtractArray(response_str, "relative_deviation", rel_dev_vals, copied) ||
-       !_ExtractArray(response_str, "z_score",            z_score_vals, copied) ||
-       !_ExtractArray(response_str, "energy",             energy_vals,  copied))
+   //--- Fill oscillator buffers from Global Variables
+   //    GV index 0 = most recent tick = Buffer[0]
+   for (int i = 0; i < limit; i++)
    {
-      Comment("WaveletOsc: Invalid Response");
-      return 0;
+      string si = IntegerToString(i);
+
+      if (InpDrawRelDeviation)
+      {
+         string key_rd = GV_PREFIX + "RelDev_" + si;
+         if (GlobalVariableCheck(key_rd))
+            BufferRelDev[i] = GlobalVariableGet(key_rd);
+      }
+      if (InpDrawZScore)
+      {
+         string key_zs = GV_PREFIX + "ZScore_" + si;
+         if (GlobalVariableCheck(key_zs))
+            BufferZScore[i] = GlobalVariableGet(key_zs);
+      }
+      if (InpDrawEnergy)
+      {
+         string key_en = GV_PREFIX + "Energy_" + si;
+         if (GlobalVariableCheck(key_en))
+            BufferEnergy[i] = GlobalVariableGet(key_en);
+      }
    }
 
-   //--- Write buffers
-   for (int i = 0; i < copied && i < rates_total; i++)
+   //--- Status comment
+   if (InpShowStatus)
    {
-      int arr_idx = copied - 1 - i;
-      if (InpDrawRelDeviation) BufferRelDev[i] = rel_dev_vals[arr_idx];
-      if (InpDrawZScore)       BufferZScore[i] = z_score_vals[arr_idx];
-      if (InpDrawEnergy)       BufferEnergy[i] = energy_vals[arr_idx];
+      double lat  = GlobalVariableGet(GV_LATENCY);
+      string info = "WaveletOsc: connected | n=" + IntegerToString(n)
+                  + " | lat=" + DoubleToString(lat, 1) + "ms";
+      Comment(info);
    }
 
-   Comment("WaveletOsc: Connected | ticks=" + IntegerToString(copied));
    return rates_total;
-}
-
-//+------------------------------------------------------------------+
-//| Parse a named array from the JSON response string.               |
-//+------------------------------------------------------------------+
-bool _ExtractArray(const string json, const string key, double& out[], int expected)
-{
-   string search = "\"" + key + "\":[";
-   int pos = StringFind(json, search);
-   if (pos < 0) return false;
-
-   int start = pos + StringLen(search);
-   int end   = StringFind(json, "]", start);
-   if (end < 0) return false;
-
-   string content = StringSubstr(json, start, end - start);
-   if (StringLen(content) == 0) return false;
-
-   string parts[];
-   int n = StringSplit(content, ',', parts);
-   if (n != expected) return false;
-
-   ArrayResize(out, n);
-   for (int i = 0; i < n; i++)
-      out[i] = StringToDouble(parts[i]);
-
-   return true;
 }
 
 //+------------------------------------------------------------------+

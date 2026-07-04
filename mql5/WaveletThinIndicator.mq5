@@ -2,19 +2,18 @@
 //| WaveletThinIndicator.mq5                                         |
 //| MT5 Thin Indicator — main chart overlay (Trend line)             |
 //|                                                                  |
-//| Responsibilities:                                                |
-//|   - Collect latest N ticks                                       |
-//|   - Serialize to JSON with millisecond timestamps                |
-//|   - POST to Python Wavelet Service                               |
-//|   - Parse JSON response                                          |
-//|   - Draw Trend on main chart                                     |
+//| Responsibilities (post Architecture Fix):                        |
+//|   - Read Trend values from Global Variables (written by EA)      |
+//|   - Draw Trend line on main chart                                |
+//|   - Display connection status from EA                            |
 //|                                                                  |
-//| Use WaveletOscillator.mq5 for deviation/z-score/energy window.  |
-//| No wavelet calculations exist here.                              |
-//| All computation is delegated to the Python service.              |
+//| No HTTP. No JSON. No WebRequest.                                 |
+//| All data is provided by WaveletBridgeEA via Global Variables.   |
+//|                                                                  |
+//| Requires WaveletBridgeEA.mq5 to be running on the same chart.   |
 //+------------------------------------------------------------------+
 #property copyright   "Wavelet Research"
-#property version     "1.10"
+#property version     "2.00"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -26,39 +25,34 @@
 #property indicator_style1  STYLE_SOLID
 #property indicator_width1  2
 
-//--- Input parameters (mirror IndicatorConfig)
-input string InpServerUrl          = "http://127.0.0.1:5000";  // Server URL
-input int    InpTickWindow         = 2048;                      // Tick Window
-input int    InpRequestTimeoutMs   = 500;                       // Request Timeout (ms)
-input bool   InpAutoRefresh        = true;                      // Auto Refresh
-input bool   InpDrawTrend          = true;                      // Draw Trend
-input bool   InpDrawRelDeviation   = true;                      // Draw Relative Deviation
-input bool   InpDrawZScore         = true;                      // Draw Z-Score
-input bool   InpDrawEnergy         = true;                      // Draw Energy
+//--- Global Variable keys (must match WaveletBridgeEA)
+#define GV_STATUS      "Wv_Status"
+#define GV_LAST_UPDATE "Wv_LastUpdate"
+#define GV_LATENCY     "Wv_Latency"
+#define GV_TREND_N     "Wv_Trend_N"
+#define GV_PREFIX      "Wv_"
 
-//--- Indicator buffers (main chart: Trend only)
+//--- Input parameters
+input bool InpDrawTrend    = true;   // Draw Trend Line
+input bool InpShowStatus   = true;   // Show status comment
+
+//--- Indicator buffers
 double BufferTrend[];
 
-//--- State
-string g_status = "Connecting...";
-
-//+------------------------------------------------------------------+
-//| Custom indicator initialization function                         |
 //+------------------------------------------------------------------+
 int OnInit()
 {
    SetIndexBuffer(0, BufferTrend, INDICATOR_DATA);
    ArraySetAsSeries(BufferTrend, true);
-   PlotIndexSetInteger(0, PLOT_DRAW_BEGIN, InpTickWindow);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "WaveletThin");
-   Comment("Wavelet Service: " + InpServerUrl);
+   IndicatorSetString(INDICATOR_SHORTNAME, "WaveletTrend");
+
+   if (InpShowStatus)
+      Comment("WaveletTrend: waiting for WaveletBridgeEA...");
 
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| Custom indicator iteration function                              |
 //+------------------------------------------------------------------+
 int OnCalculate(const int       rates_total,
                 const int       prev_calculated,
@@ -71,167 +65,47 @@ int OnCalculate(const int       rates_total,
                 const long&     volume[],
                 const int&      spread[])
 {
-   if (!InpAutoRefresh && prev_calculated > 0)
-      return rates_total;
+   //--- Read connection status from EA
+   bool connected = (GlobalVariableGet(GV_STATUS) >= 1.0);
 
-   //--- Collect latest N ticks
-   int n_ticks = MathMin(InpTickWindow, rates_total);
-   if (n_ticks < 1)
-      return 0;
-
-   MqlTick ticks_arr[];
-   int copied = CopyTicks(_Symbol, ticks_arr, COPY_TICKS_ALL, 0, n_ticks);
-   if (copied <= 0)
+   if (!connected)
    {
-      g_status = "Connecting...";
-      Comment("Wavelet: " + g_status);
+      if (InpShowStatus)
+         Comment("WaveletTrend: EA disconnected — waiting");
       return 0;
    }
 
-   //--- Build JSON payload
-   string json = "{\"ticks\":[";
-   for (int i = 0; i < copied; i++)
-   {
-      double bid = ticks_arr[i].bid;
-      double ask = ticks_arr[i].ask;
-      double mid = (bid + ask) / 2.0;
-
-      // Issue 3: send raw millisecond timestamp to preserve full precision
-      string ts_ms = IntegerToString(ticks_arr[i].time);
-
-      // Issue 4: use _Digits for symbol-correct price precision
-      json += "{\"time\":\"" + ts_ms + "\","
-           +  "\"bid\":"    + DoubleToString(bid, _Digits) + ","
-           +  "\"ask\":"    + DoubleToString(ask, _Digits) + ","
-           +  "\"mid\":"    + DoubleToString(mid, _Digits) + "}";
-      if (i < copied - 1) json += ",";
-   }
-   json += "]}";
-
-   //--- POST to Python service
-   char   post_data[];
-   char   response_data[];
-   string response_headers;
-
-   StringToCharArray(json, post_data, 0, StringLen(json));
-   ArrayResize(post_data, StringLen(json));  // trim null terminator
-
-   string headers = "Content-Type: application/json\r\n";
-   string endpoint = InpServerUrl + "/wavelet";
-
-   int http_code = WebRequest(
-      "POST",
-      endpoint,
-      headers,
-      InpRequestTimeoutMs,
-      post_data,
-      response_data,
-      response_headers
-   );
-
-   if (http_code == -1)
-   {
-      g_status = "Service Offline";
-      Comment("Wavelet: " + g_status);
+   //--- Read how many values the EA stored
+   int n = (int)GlobalVariableGet(GV_TREND_N);
+   if (n <= 0)
       return 0;
-   }
-   if (http_code == 408)
+
+   int limit = MathMin(n, rates_total);
+
+   //--- Fill indicator buffer from Global Variables
+   //    GV index 0 = most recent tick = BufferTrend[0]
+   if (InpDrawTrend)
    {
-      g_status = "Timeout";
-      Comment("Wavelet: " + g_status);
-      return 0;
+      for (int i = 0; i < limit; i++)
+      {
+         string key = GV_PREFIX + "Trend_" + IntegerToString(i);
+         if (GlobalVariableCheck(key))
+            BufferTrend[i] = GlobalVariableGet(key);
+      }
    }
-   if (http_code != 200)
+
+   //--- Status comment
+   if (InpShowStatus)
    {
-      g_status = "Invalid Response [" + IntegerToString(http_code) + "]";
-      Comment("Wavelet: " + g_status);
-      return 0;
+      double lat  = GlobalVariableGet(GV_LATENCY);
+      string info = "WaveletTrend: connected | n=" + IntegerToString(n)
+                  + " | lat=" + DoubleToString(lat, 1) + "ms";
+      Comment(info);
    }
 
-   //--- Parse JSON response
-   string response_str = CharArrayToString(response_data);
-
-   double trend_vals[];
-   double rel_dev_vals[];
-   double z_score_vals[];
-   double energy_vals[];
-   double noise_vals[];
-
-   if (!_ParseResponseArrays(response_str, copied,
-                             trend_vals, rel_dev_vals,
-                             z_score_vals, energy_vals, noise_vals))
-   {
-      g_status = "Invalid Response";
-      Comment("Wavelet: " + g_status);
-      return 0;
-   }
-
-   //--- Write Trend buffer only (index 0 = current bar in MT5 series)
-   for (int i = 0; i < copied && i < rates_total; i++)
-   {
-      int arr_idx = copied - 1 - i;  // response[last] = most recent tick
-      if (InpDrawTrend)
-         BufferTrend[i] = trend_vals[arr_idx];
-   }
-
-   g_status = "Connected";
-   Comment("Wavelet: " + g_status + " | ticks=" + IntegerToString(copied));
    return rates_total;
 }
 
-//+------------------------------------------------------------------+
-//| Parse a named array from the JSON response string.               |
-//|                                                                  |
-//| Minimal hand-written parser — MT5 has no JSON library.           |
-//| Finds "key":[...] and extracts comma-separated doubles.          |
-//|                                                                  |
-//| Returns true on success.                                         |
-//+------------------------------------------------------------------+
-bool _ExtractArray(const string json, const string key, double& out[], int expected)
-{
-   string search = "\"" + key + "\":[";
-   int pos = StringFind(json, search);
-   if (pos < 0) return false;
-
-   int start = pos + StringLen(search);
-   int end   = StringFind(json, "]", start);
-   if (end < 0) return false;
-
-   string content = StringSubstr(json, start, end - start);
-   if (StringLen(content) == 0) return false;
-
-   string parts[];
-   int n = StringSplit(content, ',', parts);
-   if (n != expected) return false;
-
-   ArrayResize(out, n);
-   for (int i = 0; i < n; i++)
-   {
-      out[i] = StringToDouble(parts[i]);
-   }
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Parse all five arrays from the response.                         |
-//+------------------------------------------------------------------+
-bool _ParseResponseArrays(const string json, int expected,
-                          double& trend[],
-                          double& rel_dev[],
-                          double& z_score[],
-                          double& energy[],
-                          double& noise[])
-{
-   if (!_ExtractArray(json, "trend",              trend,   expected)) return false;
-   if (!_ExtractArray(json, "relative_deviation", rel_dev, expected)) return false;
-   if (!_ExtractArray(json, "z_score",            z_score, expected)) return false;
-   if (!_ExtractArray(json, "energy",             energy,  expected)) return false;
-   if (!_ExtractArray(json, "noise",              noise,   expected)) return false;
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Cleanup                                                          |
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
